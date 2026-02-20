@@ -1,18 +1,19 @@
-const fs = require("fs");
-const { execSync } = require("child_process");
-const { parseJacoco } = require("./adapters/jacoco");
-const { parseLcov } = require("./adapters/lcov");
-const { loadJson, saveJson, ensureDir } = require("./lib/io");
-const { prDiffToChangedRanges } = require("./lib/diff");
+const fs = require('fs');
+const { execSync } = require('child_process');
+const { parseJacoco } = require('./adapters/jacoco');
+const { parseLcov } = require('./adapters/lcov');
+const { parseC8 } = require('./adapters/c8');
+const { loadJson, saveJson, ensureDir } = require('./lib/io');
+const { prDiffToChangedRanges } = require('./lib/diff');
 
 function parseArgs(argv) {
   const args = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a.startsWith("--")) {
+    if (a.startsWith('--')) {
       const k = a.slice(2);
       const v =
-        argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[++i] : "true";
+        argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[++i] : 'true';
       args[k] = v;
     }
   }
@@ -21,8 +22,9 @@ function parseArgs(argv) {
 
 function parseCoverage(format, coveragePath) {
   if (!fs.existsSync(coveragePath)) return new Map();
-  if (format === "jacoco") return parseJacoco(coveragePath);
-  if (format === "lcov") return parseLcov(coveragePath);
+  if (format === 'jacoco') return parseJacoco(coveragePath);
+  if (format === 'lcov') return parseLcov(coveragePath);
+  if (format === 'c8') return parseC8(coveragePath);
   throw new Error(`Unsupported format: ${format}`);
 }
 
@@ -41,7 +43,7 @@ function mergeIntoUniversal(universal, testId, fileToLines) {
   for (const [p, linesSet] of fileToLines.entries()) {
     files.push({ path: p, lines: Array.from(linesSet).sort((a, b) => a - b) });
   }
-  universal.tests.push({ id: testId, type: "unknown", files });
+  universal.tests.push({ id: testId, type: 'unknown', files });
 }
 
 async function cmdMap(args) {
@@ -49,8 +51,8 @@ async function cmdMap(args) {
   const coveragePath = args.coverage;
   const outPath = args.out;
 
-  const testListCmd = args["test-list"];
-  const testRunTemplate = args["test-run"];
+  const testListCmd = args['test-list'];
+  const testRunTemplate = args['test-run'];
 
   if (
     !format ||
@@ -60,22 +62,22 @@ async function cmdMap(args) {
     !testRunTemplate
   ) {
     throw new Error(
-      "map requires --format --coverage --out --test-list --test-run",
+      'map requires --format --coverage --out --test-list --test-run',
     );
   }
 
   // Get tests (one per line)
-  const testList = execSync(testListCmd, { encoding: "utf8" })
-    .split("\n")
+  const testList = execSync(testListCmd, { encoding: 'utf8' })
+    .split('\n')
     .map((s) => s.trim())
     .filter(Boolean);
 
   const universal = { tests: [] };
 
   for (const testId of testList) {
-    const cmd = testRunTemplate.replaceAll("{{TEST}}", testId);
+    const cmd = testRunTemplate.replaceAll('{{TEST}}', testId);
     console.log(`\n=== Running test: ${testId} ===\n${cmd}\n`);
-    execSync(cmd, { stdio: "inherit" });
+    execSync(cmd, { stdio: 'inherit' });
 
     const fileToLines = parseCoverage(format, coveragePath);
     mergeIntoUniversal(universal, testId, fileToLines);
@@ -109,7 +111,7 @@ function cmdSelect(args) {
   const outPath = args.out;
 
   if (!mapPath || !prPath || !outPath) {
-    throw new Error("select requires --map --pr --out");
+    throw new Error('select requires --map --pr --out');
   }
 
   const universal = loadJson(mapPath);
@@ -127,8 +129,8 @@ function cmdSelect(args) {
 
   fs.writeFileSync(
     outPath,
-    selected.join("\n") + (selected.length ? "\n" : ""),
-    "utf8",
+    selected.join('\n') + (selected.length ? '\n' : ''),
+    'utf8',
   );
   console.log(`Selected ${selected.length} test(s). Wrote: ${outPath}`);
 }
@@ -138,14 +140,14 @@ function cmdSelect(args) {
   const args = parseArgs(process.argv.slice(3));
 
   try {
-    if (cmd === "map") return await cmdMap(args);
-    if (cmd === "select") return cmdSelect(args);
-    console.log("Usage:");
+    if (cmd === 'map') return await cmdMap(args);
+    if (cmd === 'select') return cmdSelect(args);
+    console.log('Usage:');
     console.log(
-      "  node src/index.js map --format lcov|jacoco --coverage <path> --test-list <cmd> --test-run <cmdTemplate> --out <json>",
+      '  node src/index.js map --format lcov|jacoco --coverage <path> --test-list <cmd> --test-run <cmdTemplate> --out <json>',
     );
     console.log(
-      "  node src/index.js select --map <json> --pr <pr_files.json> --out <selected_tests.txt>",
+      '  node src/index.js select --map <json> --pr <pr_files.json> --out <selected_tests.txt>',
     );
     process.exit(1);
   } catch (e) {
