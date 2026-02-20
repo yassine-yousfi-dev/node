@@ -4,25 +4,33 @@ on:
   workflow_dispatch:
     inputs:
       coverage_format:
-        description: "jacoco or lcov"
+        description: "jacoco, lcov, or c8"
         required: true
-        default: "lcov"
+        default: "c8"
       coverage_path:
-        description: "Path to coverage file (e.g. coverage/lcov.info or target/site/jacoco/jacoco.xml)"
+        description: "Path to coverage file (e.g. coverage/coverage-final.json, coverage/lcov.info, or target/site/jacoco/jacoco.xml)"
         required: true
-        default: "coverage/lcov.info"
+        default: "coverage/coverage-final.json"
       test_list_command:
         description: "Command that prints one test id per line"
         required: true
-        default: 'node -e "console.log(''exampleTest'')"'
+        default: 'find test/parallel test/sequential -type f \( -name ''test-*.js'' -o -name ''test-*.mjs'' \) | sed -E ''s#^test/##; s#\.(mjs|js)$##'' | sort'
       test_run_command_template:
         description: "Command template to run ONE test. Use {{TEST}} placeholder."
         required: true
-        default: "echo Running {{TEST}}"
-      build_command:
-        description: "Optional build/install step (e.g. npm ci / mvn -q -DskipTests package)"
+        default: "rm -rf coverage/tmp coverage/coverage-final.json && mkdir -p coverage/tmp && NODE_V8_COVERAGE=coverage/tmp python3 tools/test.py --mode=release --type=coverage -j1 {{TEST}} && npx c8 report --reporter=json --report-dir=coverage --temp-directory=coverage/tmp"
+      test_filter:
+        description: "Optional regex filter applied to discovered test ids before mapping"
         required: false
         default: ""
+      max_tests:
+        description: "Maximum number of tests to map (safe default for manual runs)"
+        required: false
+        default: "20"
+      build_command:
+        description: "Optional build/install step (e.g. npm ci / mvn -q -DskipTests package). For Node core, this should build with --coverage."
+        required: false
+        default: "make build-ci -j4 V=1 CONFIG_FLAGS=\"--error-on-warn --coverage\" && make coverage-build-js"
   schedule:
     - cron: "0 2 * * *" # nightly 02:00 UTC
 
@@ -55,11 +63,24 @@ jobs:
           COVERAGE_PATH: ${{ inputs.coverage_path }}
           TEST_LIST_COMMAND: ${{ inputs.test_list_command }}
           TEST_RUN_TEMPLATE: ${{ inputs.test_run_command_template }}
+          TEST_FILTER: ${{ inputs.test_filter }}
+          MAX_TESTS: ${{ inputs.max_tests }}
         run: |
+          EFFECTIVE_TEST_LIST_COMMAND="$TEST_LIST_COMMAND"
+          if [ -n "$TEST_FILTER" ]; then
+            EFFECTIVE_TEST_LIST_COMMAND="$EFFECTIVE_TEST_LIST_COMMAND | grep -E '$TEST_FILTER'"
+          fi
+          if [ -n "$MAX_TESTS" ]; then
+            EFFECTIVE_TEST_LIST_COMMAND="$EFFECTIVE_TEST_LIST_COMMAND | head -n $MAX_TESTS"
+          fi
+
+          echo "Using test list command:"
+          echo "$EFFECTIVE_TEST_LIST_COMMAND"
+
           node tools/universal-coverage/src/index.js map \
             --format "$COVERAGE_FORMAT" \
             --coverage "$COVERAGE_PATH" \
-            --test-list "$TEST_LIST_COMMAND" \
+            --test-list "$EFFECTIVE_TEST_LIST_COMMAND" \
             --test-run "$TEST_RUN_TEMPLATE" \
             --out "maps/universal_coverage_map.json"
 
