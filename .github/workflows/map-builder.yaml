@@ -1,0 +1,76 @@
+name: Build Universal Coverage Map
+
+on:
+  workflow_dispatch:
+    inputs:
+      coverage_format:
+        description: "jacoco or lcov"
+        required: true
+        default: "lcov"
+      coverage_path:
+        description: "Path to coverage file (e.g. coverage/lcov.info or target/site/jacoco/jacoco.xml)"
+        required: true
+        default: "coverage/lcov.info"
+      test_list_command:
+        description: "Command that prints one test id per line"
+        required: true
+        default: 'node -e "console.log(''exampleTest'')"'
+      test_run_command_template:
+        description: "Command template to run ONE test. Use {{TEST}} placeholder."
+        required: true
+        default: "echo Running {{TEST}}"
+      build_command:
+        description: "Optional build/install step (e.g. npm ci / mvn -q -DskipTests package)"
+        required: false
+        default: ""
+  schedule:
+    - cron: "0 2 * * *" # nightly 02:00 UTC
+
+permissions:
+  contents: write
+
+jobs:
+  build-map:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install universal-coverage tool deps
+        working-directory: tools/universal-coverage
+        run: npm install
+
+      - name: Optional build/install
+        if: ${{ inputs.build_command != '' }}
+        run: ${{ inputs.build_command }}
+
+      - name: Generate universal map (per-test coverage)
+        env:
+          COVERAGE_FORMAT: ${{ inputs.coverage_format }}
+          COVERAGE_PATH: ${{ inputs.coverage_path }}
+          TEST_LIST_COMMAND: ${{ inputs.test_list_command }}
+          TEST_RUN_TEMPLATE: ${{ inputs.test_run_command_template }}
+        run: |
+          node tools/universal-coverage/src/index.js map \
+            --format "$COVERAGE_FORMAT" \
+            --coverage "$COVERAGE_PATH" \
+            --test-list "$TEST_LIST_COMMAND" \
+            --test-run "$TEST_RUN_TEMPLATE" \
+            --out "maps/universal_coverage_map.json"
+
+      - name: Commit map to branch testpilot-map
+        run: |
+          git config user.name "testpilot-bot"
+          git config user.email "testpilot-bot@users.noreply.github.com"
+
+          git checkout -B testpilot-map
+          mkdir -p maps
+          git add maps/universal_coverage_map.json
+
+          git commit -m "Update universal coverage map" || echo "No changes"
+          git push -f origin testpilot-map
