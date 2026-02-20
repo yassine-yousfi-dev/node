@@ -30,41 +30,54 @@ on:
       build_command:
         description: 'Optional build/install step (e.g. npm ci / mvn -q -DskipTests package). For Node core, this should build with --coverage.'
         required: false
-        default: 'make build-ci -j4 V=1 CONFIG_FLAGS="--coverage" && make coverage-build-js'
+        default: 'make build-ci -j$(nproc) V=1 CONFIG_FLAGS="--coverage" && make coverage-build-js'
   schedule:
     - cron: '0 2 * * *' # nightly 02:00 UTC
 
 permissions:
   contents: write
 
+concurrency:
+  group: map-builder-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-map:
     runs-on: ubuntu-latest
+    env:
+      COVERAGE_FORMAT: ${{ inputs.coverage_format || 'c8' }}
+      COVERAGE_PATH: ${{ inputs.coverage_path || 'coverage/coverage-final.json' }}
+      TEST_LIST_COMMAND: ${{ inputs.test_list_command || 'find test/parallel test/sequential -type f \( -name ''test-*.js'' -o -name ''test-*.mjs'' \) | sed -E ''s#^test/##; s#\.(mjs|js)$##'' | sort' }}
+      TEST_RUN_TEMPLATE: ${{ inputs.test_run_command_template || 'rm -rf coverage/tmp coverage/coverage-final.json && mkdir -p coverage/tmp && NODE_V8_COVERAGE=coverage/tmp python3 tools/test.py --mode=release --type=coverage -j1 {{TEST}} && npx c8 report --reporter=json --report-dir=coverage --temp-directory=coverage/tmp' }}
+      TEST_FILTER: ${{ inputs.test_filter || '' }}
+      MAX_TESTS: ${{ inputs.max_tests || '2' }}
+      BUILD_COMMAND: ${{ inputs.build_command || 'make build-ci -j$(nproc) V=1 CONFIG_FLAGS="--coverage" && make coverage-build-js' }}
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - uses: actions/setup-node@v4
         with:
           node-version: 20
 
+      - name: Cache universal-coverage deps
+        uses: actions/cache@v4
+        with:
+          path: tools/universal-coverage/node_modules
+          key: ${{ runner.os }}-universal-coverage-${{ hashFiles('tools/universal-coverage/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-universal-coverage-
+
       - name: Install universal-coverage tool deps
         working-directory: tools/universal-coverage
-        run: npm install
+        run: npm install --prefer-offline --no-audit --no-fund
 
       - name: Optional build/install
-        if: ${{ inputs.build_command != '' }}
-        run: ${{ inputs.build_command }}
+        if: ${{ env.BUILD_COMMAND != '' }}
+        run: ${{ env.BUILD_COMMAND }}
 
       - name: Generate universal map (per-test coverage)
-        env:
-          COVERAGE_FORMAT: ${{ inputs.coverage_format }}
-          COVERAGE_PATH: ${{ inputs.coverage_path }}
-          TEST_LIST_COMMAND: ${{ inputs.test_list_command }}
-          TEST_RUN_TEMPLATE: ${{ inputs.test_run_command_template }}
-          TEST_FILTER: ${{ inputs.test_filter }}
-          MAX_TESTS: ${{ inputs.max_tests }}
         run: |
           EFFECTIVE_TEST_LIST_COMMAND="$TEST_LIST_COMMAND"
           if [ -n "$TEST_FILTER" ]; then
