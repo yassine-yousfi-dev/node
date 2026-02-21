@@ -78,6 +78,20 @@ jobs:
         working-directory: tools/universal-coverage
         run: npm install --prefer-offline --no-audit --no-fund
 
+      - name: Install ccache
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ccache
+          echo "/usr/lib/ccache" >> "$GITHUB_PATH"
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ${{ runner.os }}-ccache-node-coverage-v1-${{ github.ref_name }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-node-coverage-v1-
+
       - name: Decide whether to build
         id: build_check
         shell: bash
@@ -106,7 +120,16 @@ jobs:
 
       - name: Optional build/install
         if: ${{ steps.build_check.outputs.should_build == 'true' && env.BUILD_COMMAND != '' }}
+        env:
+          CCACHE_DIR: ~/.ccache
+          CCACHE_COMPRESS: "1"
+          CCACHE_COMPRESSLEVEL: "6"
+          CCACHE_MAXSIZE: "3G"
         run: ${{ env.BUILD_COMMAND }}
+
+      - name: ccache stats
+        if: ${{ steps.build_check.outputs.should_build == 'true' }}
+        run: ccache -s
 
       - name: Generate universal map (per-test coverage)
         run: |
