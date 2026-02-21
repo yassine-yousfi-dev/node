@@ -31,6 +31,10 @@ on:
         description: 'Optional build/install step (e.g. npm ci / mvn -q -DskipTests package). For Node core, this should build with --coverage.'
         required: false
         default: 'make build-ci -j$(nproc) V=1 CONFIG_FLAGS="--coverage" && make coverage-build-js'
+      build_mode:
+        description: 'Build behavior: auto (build if missing), always, or never'
+        required: false
+        default: 'auto'
   schedule:
     - cron: '0 2 * * *' # nightly 02:00 UTC
 
@@ -52,6 +56,7 @@ jobs:
       TEST_FILTER: ${{ inputs.test_filter || '' }}
       MAX_TESTS: ${{ inputs.max_tests || '2' }}
       BUILD_COMMAND: ${{ inputs.build_command || 'make build-ci -j$(nproc) V=1 CONFIG_FLAGS="--coverage" && make coverage-build-js' }}
+      BUILD_MODE: ${{ inputs.build_mode || 'auto' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -73,8 +78,34 @@ jobs:
         working-directory: tools/universal-coverage
         run: npm install --prefer-offline --no-audit --no-fund
 
+      - name: Decide whether to build
+        id: build_check
+        shell: bash
+        run: |
+          set -euo pipefail
+          mode="${BUILD_MODE:-auto}"
+          should_build="true"
+          reason="default"
+
+          if [ "$mode" = "always" ]; then
+            should_build="true"
+            reason="build_mode=always"
+          elif [ "$mode" = "never" ]; then
+            should_build="false"
+            reason="build_mode=never"
+          elif [ -x "out/Release/node" ]; then
+            should_build="false"
+            reason="existing out/Release/node detected"
+          else
+            should_build="true"
+            reason="no existing build artifacts detected"
+          fi
+
+          echo "should_build=$should_build" >> "$GITHUB_OUTPUT"
+          echo "Build decision: $should_build ($reason)"
+
       - name: Optional build/install
-        if: ${{ env.BUILD_COMMAND != '' }}
+        if: ${{ steps.build_check.outputs.should_build == 'true' && env.BUILD_COMMAND != '' }}
         run: ${{ env.BUILD_COMMAND }}
 
       - name: Generate universal map (per-test coverage)
