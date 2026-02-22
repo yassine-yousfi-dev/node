@@ -57,6 +57,10 @@ jobs:
       MAX_TESTS: ${{ inputs.max_tests || '2' }}
       BUILD_COMMAND: ${{ inputs.build_command || 'make build-ci -j$(nproc) V=1 CONFIG_FLAGS="--coverage" && make coverage-build-js' }}
       BUILD_MODE: ${{ inputs.build_mode || 'auto' }}
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_COMPRESS: "1"
+      CCACHE_COMPRESSLEVEL: "6"
+      CCACHE_MAXSIZE: "3G"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -83,11 +87,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ccache
           echo "/usr/lib/ccache" >> "$GITHUB_PATH"
+          mkdir -p "$CCACHE_DIR"
 
-      - name: Cache ccache
-        uses: actions/cache@v4
+      - name: Restore ccache
+        id: ccache_restore
+        uses: actions/cache/restore@v4
         with:
-          path: ~/.ccache
+          path: ${{ env.CCACHE_DIR }}
           key: ${{ runner.os }}-ccache-node-coverage-v1-${{ github.ref_name }}
           restore-keys: |
             ${{ runner.os }}-ccache-node-coverage-v1-
@@ -120,16 +126,18 @@ jobs:
 
       - name: Optional build/install
         if: ${{ steps.build_check.outputs.should_build == 'true' && env.BUILD_COMMAND != '' }}
-        env:
-          CCACHE_DIR: ~/.ccache
-          CCACHE_COMPRESS: "1"
-          CCACHE_COMPRESSLEVEL: "6"
-          CCACHE_MAXSIZE: "3G"
         run: ${{ env.BUILD_COMMAND }}
 
       - name: ccache stats
         if: ${{ steps.build_check.outputs.should_build == 'true' }}
         run: ccache -s
+
+      - name: Save ccache
+        if: ${{ always() && steps.build_check.outputs.should_build == 'true' && !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.ccache_restore.outputs.cache-primary-key }}
 
       - name: Generate universal map (per-test coverage)
         run: |
