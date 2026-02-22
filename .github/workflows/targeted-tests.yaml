@@ -24,15 +24,14 @@ jobs:
 
       - name: Fetch universal map branch
         run: |
-          git fetch origin testpilot-map:testpilot-map
-          ls -la testpilot-map/maps || true
+          git fetch --no-tags --depth=1 origin testpilot-map:testpilot-map
 
       - name: Select tests based on PR diff + map
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require("fs");
-            const path = require("path");
+            const { execSync } = require("child_process");
 
             const owner = context.repo.owner;
             const repo = context.repo.repo;
@@ -50,24 +49,27 @@ jobs:
               patch: f.patch || null
             }));
             fs.writeFileSync("pr_files.json", JSON.stringify(prDiff, null, 2));
+            fs.writeFileSync("selected_tests.txt", "");
 
             // Load universal map from the dedicated branch
-            const mapPath = path.join("testpilot-map", "maps", "universal_coverage_map.json");
-            if (!fs.existsSync(mapPath)) {
+            const mapPath = "universal_coverage_map.json";
+            try {
+              const map = execSync("git show testpilot-map:maps/universal_coverage_map.json", { encoding: "utf8" });
+              fs.writeFileSync(mapPath, map);
+            } catch {
               core.warning("No universal map found. Recommend running full test suite.");
               core.setOutput("selected_tests", "");
               return;
             }
 
             // Run selector
-            const { execSync } = require("child_process");
             execSync(`node tools/universal-coverage/src/index.js select --map "${mapPath}" --pr "pr_files.json" --out "selected_tests.txt"`, { stdio: "inherit" });
 
             const selected = fs.readFileSync("selected_tests.txt", "utf8").trim();
             if (!selected) {
               core.warning("No impacted tests found (or missing mapping). Recommend safe fallback (full or smoke suite).");
             } else {
-              core.notice(`Selected tests:\n${selected.split("\n").map(x => "• " + x).join("\n")}`);
+              core.notice(`Selected tests:\n${selected.split("\n").map(x => "- " + x).join("\n")}`);
             }
 
       - name: Upload selected tests list
@@ -75,3 +77,4 @@ jobs:
         with:
           name: selected_tests
           path: selected_tests.txt
+          if-no-files-found: ignore
