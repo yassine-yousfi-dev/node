@@ -5,6 +5,7 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
+  actions: read
   contents: read
   pull-requests: read
 
@@ -18,13 +19,62 @@ jobs:
         with:
           node-version: 20
 
+      - name: Find latest universal map artifact from main
+        id: find_map
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const defaultBranch = context.payload.repository.default_branch || "main";
+
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              owner,
+              repo,
+              workflow_id: "map-builder.yaml",
+              branch: defaultBranch,
+              status: "completed",
+              per_page: 100
+            });
+
+            const run = runs.find((r) => r.conclusion === "success");
+            if (!run) {
+              core.warning(`No successful map-builder run found on ${defaultBranch}.`);
+              core.setOutput("has_map", "false");
+              return;
+            }
+
+            const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+              owner,
+              repo,
+              run_id: run.id,
+              per_page: 100
+            });
+
+            const mapArtifact = artifacts.find((a) => a.name === "universal-map" && !a.expired);
+            if (!mapArtifact) {
+              core.warning(`Run ${run.id} has no non-expired universal-map artifact.`);
+              core.setOutput("has_map", "false");
+              return;
+            }
+
+            core.notice(`Using universal-map from run ${run.id} on ${defaultBranch}.`);
+            core.setOutput("has_map", "true");
+            core.setOutput("run_id", String(run.id));
+
+      - name: Download universal map artifact from main
+        if: ${{ steps.find_map.outputs.has_map == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: universal-map
+          path: maps
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.find_map.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Install universal-coverage tool deps
         working-directory: tools/universal-coverage
         run: npm install
-
-      - name: Fetch universal map branch
-        run: |
-          git fetch --no-tags --depth=1 origin testpilot-map:testpilot-map
 
       - name: Select tests based on PR diff + map
         uses: actions/github-script@v7
@@ -51,13 +101,9 @@ jobs:
             fs.writeFileSync("pr_files.json", JSON.stringify(prDiff, null, 2));
             fs.writeFileSync("selected_tests.txt", "");
 
-            // Load universal map from the dedicated branch
-            const mapPath = "universal_coverage_map.json";
-            try {
-              const map = execSync("git show testpilot-map:maps/universal_coverage_map.json", { encoding: "utf8" });
-              fs.writeFileSync(mapPath, map);
-            } catch {
-              core.warning("No universal map found. Recommend running full test suite.");
+            const mapPath = "maps/universal_coverage_map.json";
+            if (!fs.existsSync(mapPath)) {
+              core.warning("No universal map artifact found from main. Recommend running full test suite.");
               core.setOutput("selected_tests", "");
               return;
             }

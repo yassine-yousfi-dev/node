@@ -1,6 +1,8 @@
 name: Build Universal Coverage Map
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       coverage_format:
@@ -39,7 +41,7 @@ on:
     - cron: '0 2 * * *' # nightly 02:00 UTC
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: map-builder-${{ github.workflow }}-${{ github.ref }}
@@ -159,14 +161,9 @@ jobs:
             --test-run "$TEST_RUN_TEMPLATE" \
             --out "maps/universal_coverage_map.json"
 
-      - name: Commit map to branch testpilot-map
-        run: |
-          git config user.name "testpilot-bot"
-          git config user.email "testpilot-bot@users.noreply.github.com"
-
-          git checkout -B testpilot-map
-          mkdir -p maps
-          git add maps/universal_coverage_map.json
-
-          git commit -m "Update universal coverage map" || echo "No changes"
-          git push -f origin testpilot-map
+      - name: Upload universal map artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: universal-map
+          path: maps/universal_coverage_map.json
+          if-no-files-found: error
