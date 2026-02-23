@@ -28,7 +28,7 @@ on:
       max_tests:
         description: 'Maximum number of tests to map (safe default for manual runs)'
         required: false
-        default: '2'
+        default: '100'
       build_command:
         description: 'Optional build/install step (e.g. npm ci / mvn -q -DskipTests package). For Node core, this should build with --coverage.'
         required: false

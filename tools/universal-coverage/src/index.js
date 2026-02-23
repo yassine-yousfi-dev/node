@@ -90,7 +90,7 @@ async function cmdMap(args) {
 
 function intersectsChangedRanges(fileEntry, changedRanges) {
   // changedRanges: Map<path, Array<[start,end]>>
-  const ranges = changedRanges.get(fileEntry.path);
+  const ranges = getChangedRangesForPath(changedRanges, fileEntry.path);
   if (!ranges || ranges.length === 0) return false;
 
   // If no lines recorded, treat file-level match
@@ -103,6 +103,46 @@ function intersectsChangedRanges(fileEntry, changedRanges) {
     }
   }
   return false;
+}
+
+function normalizePathForMatch(p) {
+  return String(p || '')
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/^\/+/, '');
+}
+
+const normalizedChangedRangesCache = new WeakMap();
+
+function getChangedRangesForPath(changedRanges, filePath) {
+  const normalizedFilePath = normalizePathForMatch(filePath);
+
+  // 1) Fast exact (normalized) match
+  let normalized = normalizedChangedRangesCache.get(changedRanges);
+  if (normalized == null) {
+    const normalizedMap = new Map();
+    for (const [k, v] of changedRanges.entries()) {
+      normalizedMap.set(normalizePathForMatch(k), v);
+    }
+    normalizedChangedRangesCache.set(changedRanges, normalizedMap);
+    normalized = normalizedChangedRangesCache.get(changedRanges);
+  }
+  const direct = normalized.get(normalizedFilePath);
+  if (direct) return direct;
+
+  // 2) Fallback for absolute-vs-relative mismatches:
+  // map path ".../repo/lib/x.js" should match PR path "lib/x.js".
+  let bestKey = null;
+  for (const k of normalized.keys()) {
+    if (
+      normalizedFilePath === k ||
+      normalizedFilePath.endsWith(`/${k}`)
+    ) {
+      if (bestKey == null || k.length > bestKey.length) bestKey = k;
+    }
+  }
+  if (bestKey) return normalized.get(bestKey);
+  return null;
 }
 
 function cmdSelect(args) {
@@ -118,6 +158,9 @@ function cmdSelect(args) {
   const prFiles = loadJson(prPath); // [{filename, patch}...]
 
   const changedRanges = prDiffToChangedRanges(prFiles);
+  console.log(
+    `Selection input: ${prFiles.length} changed file(s), ${(universal.tests || []).length} mapped test(s).`,
+  );
 
   const selected = [];
   for (const t of universal.tests || []) {
