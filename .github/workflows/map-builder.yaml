@@ -56,13 +56,13 @@ jobs:
       TEST_LIST_COMMAND: ${{ inputs.test_list_command || 'find test/parallel test/sequential -type f \( -name ''test-*.js'' -o -name ''test-*.mjs'' \) | sed -E ''s#^test/##; s#\.(mjs|js)$##'' | sort' }}
       TEST_RUN_TEMPLATE: ${{ inputs.test_run_command_template || 'rm -rf coverage/tmp coverage/coverage-final.json && mkdir -p coverage/tmp && NODE_V8_COVERAGE=coverage/tmp python3 tools/test.py --mode=release --type=coverage -j1 {{TEST}} && npx c8 report --reporter=json --report-dir=coverage --temp-directory=coverage/tmp' }}
       TEST_FILTER: ${{ inputs.test_filter || '' }}
-      MAX_TESTS: ${{ inputs.max_tests || '2' }}
+      MAX_TESTS: ${{ inputs.max_tests }}
       BUILD_COMMAND: ${{ inputs.build_command || 'make build-ci -j$(nproc) V=1 CONFIG_FLAGS="--coverage" && make coverage-build-js' }}
       BUILD_MODE: ${{ inputs.build_mode || 'auto' }}
       CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_COMPRESS: "1"
-      CCACHE_COMPRESSLEVEL: "6"
-      CCACHE_MAXSIZE: "3G"
+      CCACHE_COMPRESS: '1'
+      CCACHE_COMPRESSLEVEL: '6'
+      CCACHE_MAXSIZE: '3G'
     steps:
       - uses: actions/checkout@v4
         with:
