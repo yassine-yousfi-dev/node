@@ -50,6 +50,7 @@ async function cmdMap(args) {
   const format = args.format;
   const coveragePath = args.coverage;
   const outPath = args.out;
+  const continueOnTestFailure = args['continue-on-test-failure'] === 'true';
 
   const testListCmd = args['test-list'];
   const testRunTemplate = args['test-run'];
@@ -73,11 +74,19 @@ async function cmdMap(args) {
     .filter(Boolean);
 
   const universal = { tests: [] };
+  const failedTests = [];
 
   for (const testId of testList) {
     const cmd = testRunTemplate.replaceAll('{{TEST}}', testId);
     console.log(`\n=== Running test: ${testId} ===\n${cmd}\n`);
-    execSync(cmd, { stdio: 'inherit' });
+    try {
+      execSync(cmd, { stdio: 'inherit' });
+    } catch (err) {
+      if (!continueOnTestFailure) throw err;
+      failedTests.push(testId);
+      console.warn(`Skipping failed test in map generation: ${testId}`);
+      continue;
+    }
 
     const fileToLines = parseCoverage(format, coveragePath);
     mergeIntoUniversal(universal, testId, fileToLines);
@@ -86,6 +95,11 @@ async function cmdMap(args) {
   ensureDir(outPath);
   saveJson(outPath, universal);
   console.log(`\nWrote universal map: ${outPath}`);
+  if (failedTests.length > 0) {
+    console.warn(
+      `Map generated with ${failedTests.length} failed test(s) skipped.`,
+    );
+  }
 }
 
 function intersectsChangedRanges(fileEntry, changedRanges) {

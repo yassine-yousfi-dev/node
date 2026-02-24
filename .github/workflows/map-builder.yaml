@@ -97,8 +97,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ${{ runner.os }}-ccache-node-coverage-v1-${{ github.ref_name }}
+          key: ${{ runner.os }}-ccache-node-coverage-v1-${{ github.ref_name }}-${{ github.run_id }}
           restore-keys: |
+            ${{ runner.os }}-ccache-node-coverage-v1-${{ github.ref_name }}-
             ${{ runner.os }}-ccache-node-coverage-v1-
 
       - name: Decide whether to build
@@ -161,6 +162,7 @@ jobs:
             --coverage "$COVERAGE_PATH" \
             --test-list "$EFFECTIVE_TEST_LIST_COMMAND" \
             --test-run "$TEST_RUN_TEMPLATE" \
+            --continue-on-test-failure "true" \
             --out "maps/universal_coverage_map.json"
 
       - name: Upload universal map artifact
