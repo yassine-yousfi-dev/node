@@ -30,22 +30,12 @@ function parseCoverage(format, coveragePath) {
   throw new Error(`Unsupported format: ${format}`);
 }
 
-/**
- * Universal schema:
- * {
- *   "tests":[
- *     { "id":"TestName", "type":"unknown",
- *       "files":[ {"path":"x","lines":[1,2,3]} ]
- *     }
- *   ]
- * }
- */
-function mergeIntoUniversal(universal, testId, fileToLines) {
+function buildUniversalTestEntry(testId, fileToLines) {
   const files = [];
   for (const [p, linesSet] of fileToLines.entries()) {
     files.push({ path: p, lines: Array.from(linesSet).sort((a, b) => a - b) });
   }
-  universal.tests.push({ id: testId, type: 'unknown', files });
+  return { id: testId, type: 'unknown', files };
 }
 
 async function cmdMap(args) {
@@ -88,28 +78,45 @@ async function cmdMap(args) {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  const universal = { tests: [] };
   const failedTests = [];
-
-  for (const testId of testList) {
-    const cmd = testRunTemplate.replaceAll('{{TEST}}', testId);
-    console.log(`\n=== Running test: ${testId} ===\n${cmd}\n`);
-    try {
-      execSync(cmd, { stdio: 'inherit' });
-    } catch (err) {
-      if (!continueOnTestFailure) throw err;
-      failedTests.push(testId);
-      console.warn(`Skipping failed test in map generation: ${testId}`);
-      continue;
-    }
-
-    const fileToLines = parseCoverage(format, coveragePath);
-    mergeIntoUniversal(universal, testId, fileToLines);
-  }
+  let mappedCount = 0;
+  let wroteAnyEntry = false;
+  let writeCompleted = false;
 
   ensureDir(outPath);
-  saveJson(outPath, universal);
-  console.log(`\nWrote universal map: ${outPath}`);
+  const outFd = fs.openSync(outPath, 'w');
+  fs.writeSync(outFd, '{"tests":[\n');
+
+  try {
+    for (const testId of testList) {
+      const cmd = testRunTemplate.replaceAll('{{TEST}}', testId);
+      console.log(`\n=== Running test: ${testId} ===\n${cmd}\n`);
+      try {
+        execSync(cmd, { stdio: 'inherit' });
+      } catch (err) {
+        if (!continueOnTestFailure) throw err;
+        failedTests.push(testId);
+        console.warn(`Skipping failed test in map generation: ${testId}`);
+        continue;
+      }
+
+      const fileToLines = parseCoverage(format, coveragePath);
+      const entry = buildUniversalTestEntry(testId, fileToLines);
+      if (wroteAnyEntry) fs.writeSync(outFd, ',\n');
+      fs.writeSync(outFd, JSON.stringify(entry));
+      wroteAnyEntry = true;
+      mappedCount += 1;
+    }
+    fs.writeSync(outFd, '\n]}\n');
+    writeCompleted = true;
+  } finally {
+    fs.closeSync(outFd);
+    if (!writeCompleted) {
+      fs.rmSync(outPath, { force: true });
+    }
+  }
+
+  console.log(`\nWrote universal map: ${outPath} (${mappedCount} test entries)`);
   if (failedTests.length > 0) {
     console.warn(
       `Map generated with ${failedTests.length} failed test(s) skipped.`,
