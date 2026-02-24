@@ -14,13 +14,13 @@ on:
         required: true
         default: 'coverage/coverage-final.json'
       test_list_command:
-        description: 'Command that prints one test id per line'
-        required: true
-        default: 'find test/parallel test/sequential -type f \( -name ''test-*.js'' -o -name ''test-*.mjs'' \) | sed -E ''s#^test/##; s#\.(mjs|js)$##'' | sort'
+        description: 'Optional command that prints one test id per line. If empty, auto-discovery is used.'
+        required: false
+        default: ''
       test_run_command_template:
-        description: 'Command template to run ONE test. Use {{TEST}} placeholder.'
-        required: true
-        default: 'rm -rf coverage/tmp coverage/coverage-final.json && mkdir -p coverage/tmp && NODE_V8_COVERAGE=coverage/tmp python3 tools/test.py --mode=release --type=coverage -j1 {{TEST}} && npx c8 report --reporter=json --report-dir=coverage --temp-directory=coverage/tmp'
+        description: 'Optional command template to run ONE test. Use {{TEST}} placeholder. If empty, auto-discovery is used.'
+        required: false
+        default: ''
       test_filter:
         description: 'Optional regex filter applied to discovered test ids before mapping'
         required: false
@@ -53,8 +53,8 @@ jobs:
     env:
       COVERAGE_FORMAT: ${{ inputs.coverage_format || 'c8' }}
       COVERAGE_PATH: ${{ inputs.coverage_path || 'coverage/coverage-final.json' }}
-      TEST_LIST_COMMAND: ${{ inputs.test_list_command || 'find test/parallel test/sequential -type f \( -name ''test-*.js'' -o -name ''test-*.mjs'' \) | sed -E ''s#^test/##; s#\.(mjs|js)$##'' | sort' }}
-      TEST_RUN_TEMPLATE: ${{ inputs.test_run_command_template || 'rm -rf coverage/tmp coverage/coverage-final.json && mkdir -p coverage/tmp && NODE_V8_COVERAGE=coverage/tmp python3 tools/test.py --mode=release --type=coverage -j1 {{TEST}} && npx c8 report --reporter=json --report-dir=coverage --temp-directory=coverage/tmp' }}
+      TEST_LIST_COMMAND: ${{ inputs.test_list_command || '' }}
+      TEST_RUN_TEMPLATE: ${{ inputs.test_run_command_template || '' }}
       TEST_FILTER: ${{ inputs.test_filter || '' }}
       MAX_TESTS: ${{ inputs.max_tests || '' }}
       BUILD_COMMAND: ${{ inputs.build_command || 'make build-ci -j$(nproc) V=1 CONFIG_FLAGS="--coverage" && make coverage-build-js' }}
@@ -147,21 +147,26 @@ jobs:
       - name: Generate universal map (per-test coverage)
         run: |
           EFFECTIVE_TEST_LIST_COMMAND="$TEST_LIST_COMMAND"
-          if [ -n "$TEST_FILTER" ]; then
+          if [ -n "$TEST_FILTER" ] && [ -n "$EFFECTIVE_TEST_LIST_COMMAND" ]; then
             EFFECTIVE_TEST_LIST_COMMAND="$EFFECTIVE_TEST_LIST_COMMAND | grep -E '$TEST_FILTER'"
           fi
-          if [ -n "$MAX_TESTS" ]; then
+          if [ -n "$MAX_TESTS" ] && [ -n "$EFFECTIVE_TEST_LIST_COMMAND" ]; then
             EFFECTIVE_TEST_LIST_COMMAND="$EFFECTIVE_TEST_LIST_COMMAND | head -n $MAX_TESTS"
           fi
 
-          echo "Using test list command:"
-          echo "$EFFECTIVE_TEST_LIST_COMMAND"
+          if [ -n "$EFFECTIVE_TEST_LIST_COMMAND" ]; then
+            echo "Using test list command:"
+            echo "$EFFECTIVE_TEST_LIST_COMMAND"
+          else
+            echo "No explicit test list command provided; map command will auto-discover."
+          fi
 
           node tools/universal-coverage/src/index.js map \
             --format "$COVERAGE_FORMAT" \
             --coverage "$COVERAGE_PATH" \
             --test-list "$EFFECTIVE_TEST_LIST_COMMAND" \
             --test-run "$TEST_RUN_TEMPLATE" \
+            --auto-discover-tests "true" \
             --continue-on-test-failure "true" \
             --out "maps/universal_coverage_map.json"
 

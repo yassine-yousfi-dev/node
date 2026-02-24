@@ -5,6 +5,7 @@ const { parseLcov } = require('./adapters/lcov');
 const { parseC8 } = require('./adapters/c8');
 const { loadJson, saveJson, ensureDir } = require('./lib/io');
 const { prDiffToChangedRanges } = require('./lib/diff');
+const { discoverTestSetup } = require('./lib/discovery');
 
 function parseArgs(argv) {
   const args = {};
@@ -12,8 +13,9 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a.startsWith('--')) {
       const k = a.slice(2);
-      const v =
-        argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[++i] : 'true';
+      const hasNextValue =
+        i + 1 < argv.length && !argv[i + 1].startsWith('--');
+      const v = hasNextValue ? argv[++i] : 'true';
       args[k] = v;
     }
   }
@@ -51,9 +53,22 @@ async function cmdMap(args) {
   const coveragePath = args.coverage;
   const outPath = args.out;
   const continueOnTestFailure = args['continue-on-test-failure'] === 'true';
+  const autoDiscoverTests = args['auto-discover-tests'] === 'true';
 
-  const testListCmd = args['test-list'];
-  const testRunTemplate = args['test-run'];
+  let testListCmd = args['test-list'];
+  let testRunTemplate = args['test-run'];
+
+  if ((!testListCmd || !testRunTemplate) && autoDiscoverTests) {
+    const detected = discoverTestSetup();
+    testListCmd = testListCmd || detected.test_list_command;
+    testRunTemplate = testRunTemplate || detected.test_run_command_template;
+    console.log(
+      `Auto-discovered test setup: ${detected.adapter} (${detected.source}, confidence=${detected.confidence})`,
+    );
+    if (Array.isArray(detected.warnings)) {
+      for (const w of detected.warnings) console.warn(w);
+    }
+  }
 
   if (
     !format ||
@@ -100,6 +115,25 @@ async function cmdMap(args) {
       `Map generated with ${failedTests.length} failed test(s) skipped.`,
     );
   }
+}
+
+function cmdDiscover(args) {
+  const outPath = args.out;
+  const detected = discoverTestSetup();
+  const payload = {
+    adapter: detected.adapter,
+    source: detected.source,
+    confidence: detected.confidence,
+    test_list_command: detected.test_list_command,
+    test_run_command_template: detected.test_run_command_template,
+    warnings: detected.warnings || [],
+  };
+
+  if (outPath) {
+    ensureDir(outPath);
+    saveJson(outPath, payload);
+  }
+  console.log(JSON.stringify(payload, null, 2));
 }
 
 function intersectsChangedRanges(fileEntry, changedRanges) {
@@ -198,10 +232,14 @@ function cmdSelect(args) {
 
   try {
     if (cmd === 'map') return await cmdMap(args);
+    if (cmd === 'discover') return cmdDiscover(args);
     if (cmd === 'select') return cmdSelect(args);
     console.log('Usage:');
     console.log(
-      '  node src/index.js map --format lcov|jacoco --coverage <path> --test-list <cmd> --test-run <cmdTemplate> --out <json>',
+      '  node src/index.js map --format c8|lcov|jacoco --coverage <path> --test-list <cmd> --test-run <cmdTemplate> [--auto-discover-tests true] [--continue-on-test-failure true] --out <json>',
+    );
+    console.log(
+      '  node src/index.js discover [--out <json>]',
     );
     console.log(
       '  node src/index.js select --map <json> --pr <pr_files.json> --out <selected_tests.txt>',
