@@ -3,7 +3,12 @@ const { execSync } = require('child_process');
 const { parseJacoco } = require('./adapters/jacoco');
 const { parseLcov } = require('./adapters/lcov');
 const { parseC8 } = require('./adapters/c8');
-const { loadJson, saveJson, ensureDir } = require('./lib/io');
+const {
+  loadJson,
+  saveJson,
+  ensureDir,
+  forEachUniversalMapTest,
+} = require('./lib/io');
 const { prDiffToChangedRanges } = require('./lib/diff');
 const { discoverTestSetup } = require('./lib/discovery');
 
@@ -200,7 +205,7 @@ function getChangedRangesForPath(changedRanges, filePath) {
   return null;
 }
 
-function cmdSelect(args) {
+async function cmdSelect(args) {
   const mapPath = args.map;
   const prPath = args.pr;
   const outPath = args.out;
@@ -209,28 +214,31 @@ function cmdSelect(args) {
     throw new Error('select requires --map --pr --out');
   }
 
-  const universal = loadJson(mapPath);
   const prFiles = loadJson(prPath); // [{filename, patch}...]
 
   const changedRanges = prDiffToChangedRanges(prFiles);
-  console.log(
-    `Selection input: ${prFiles.length} changed file(s), ${(universal.tests || []).length} mapped test(s).`,
-  );
+  console.log(`Selection input: ${prFiles.length} changed file(s).`);
 
-  const selected = [];
-  for (const t of universal.tests || []) {
-    const hit = (t.files || []).some((f) =>
-      intersectsChangedRanges(f, changedRanges),
-    );
-    if (hit) selected.push(t.id);
+  ensureDir(outPath);
+  const outFd = fs.openSync(outPath, 'w');
+  let mappedCount = 0;
+  let selectedCount = 0;
+
+  try {
+    await forEachUniversalMapTest(mapPath, (t) => {
+      mappedCount += 1;
+      const hit = (t.files || []).some((f) =>
+        intersectsChangedRanges(f, changedRanges),
+      );
+      if (!hit) return;
+      fs.writeSync(outFd, `${t.id}\n`);
+      selectedCount += 1;
+    });
+  } finally {
+    fs.closeSync(outFd);
   }
-
-  fs.writeFileSync(
-    outPath,
-    selected.join('\n') + (selected.length ? '\n' : ''),
-    'utf8',
-  );
-  console.log(`Selected ${selected.length} test(s). Wrote: ${outPath}`);
+  console.log(`Scanned ${mappedCount} mapped test(s).`);
+  console.log(`Selected ${selectedCount} test(s). Wrote: ${outPath}`);
 }
 
 (async function main() {
@@ -240,7 +248,7 @@ function cmdSelect(args) {
   try {
     if (cmd === 'map') return await cmdMap(args);
     if (cmd === 'discover') return cmdDiscover(args);
-    if (cmd === 'select') return cmdSelect(args);
+    if (cmd === 'select') return await cmdSelect(args);
     console.log('Usage:');
     console.log(
       '  node src/index.js map --format c8|lcov|jacoco --coverage <path> --test-list <cmd> --test-run <cmdTemplate> [--auto-discover-tests true] [--continue-on-test-failure true] --out <json>',
