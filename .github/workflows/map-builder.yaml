@@ -29,6 +29,10 @@ on:
         description: 'Maximum number of tests to map (leave empty to run all discovered tests)'
         required: false
         default: ''
+      map_jobs:
+        description: 'Parallel workers for map generation'
+        required: false
+        default: '8'
       build_command:
         description: 'Optional build/install step (e.g. npm ci / mvn -q -DskipTests package). For Node core, this should build with --coverage.'
         required: false
@@ -58,6 +62,7 @@ jobs:
       TEST_RUN_TEMPLATE: ${{ inputs.test_run_command_template || '' }}
       TEST_FILTER: ${{ inputs.test_filter || '' }}
       MAX_TESTS: ${{ inputs.max_tests || '' }}
+      MAP_JOBS: ${{ inputs.map_jobs || '8' }}
       BUILD_COMMAND: ${{ inputs.build_command || 'make build-ci -j$(nproc) V=1 CONFIG_FLAGS="--coverage" && make coverage-build-js' }}
       BUILD_MODE: ${{ inputs.build_mode || 'auto' }}
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -307,6 +312,7 @@ jobs:
                 --coverage "$COVERAGE_PATH" \
                 --test-list "cat tests_to_refresh.txt" \
                 --test-run "$TEST_RUN_TEMPLATE" \
+                --jobs "$MAP_JOBS" \
                 --auto-discover-tests "true" \
                 --continue-on-test-failure "true" \
                 --out "maps/universal_coverage_delta.json"
@@ -342,6 +348,7 @@ jobs:
             --coverage "$COVERAGE_PATH" \
             --test-list "$EFFECTIVE_TEST_LIST_COMMAND" \
             --test-run "$TEST_RUN_TEMPLATE" \
+            --jobs "$MAP_JOBS" \
             --auto-discover-tests "true" \
             --continue-on-test-failure "true" \
             --out "maps/universal_coverage_map.json"

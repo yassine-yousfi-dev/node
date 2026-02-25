@@ -1,5 +1,6 @@
 const fs = require('fs');
-const { execSync } = require('child_process');
+const path = require('path');
+const { execSync, spawn } = require('child_process');
 const { parseJacoco } = require('./adapters/jacoco');
 const { parseLcov } = require('./adapters/lcov');
 const { parseC8 } = require('./adapters/c8');
@@ -43,12 +44,53 @@ function buildUniversalTestEntry(testId, fileToLines) {
   return { id: testId, type: 'unknown', files };
 }
 
+function parsePositiveInt(raw, fallback) {
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return n;
+}
+
+function expandTemplate(template, vars) {
+  let out = template;
+  for (const [k, v] of Object.entries(vars)) {
+    out = out.replaceAll(`{{${k}}}`, String(v));
+  }
+  return out;
+}
+
+function getCoveragePathForWorker(coveragePath, workerId) {
+  if (coveragePath.includes('{{WORKER}}')) {
+    return coveragePath.replaceAll('{{WORKER}}', String(workerId));
+  }
+  const dir = path.dirname(coveragePath);
+  const base = path.basename(coveragePath);
+  return path.join(dir, `worker-${workerId}`, base);
+}
+
+function runShellCommand(cmd) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, {
+      shell: true,
+      stdio: 'inherit',
+    });
+    child.on('error', reject);
+    child.on('exit', (code, signal) => {
+      if (code === 0) return resolve();
+      const reason = signal
+        ? `signal ${signal}`
+        : `exit code ${String(code)}`;
+      reject(new Error(`Command failed (${reason}): ${cmd}`));
+    });
+  });
+}
+
 async function cmdMap(args) {
   const format = args.format;
   const coveragePath = args.coverage;
   const outPath = args.out;
   const continueOnTestFailure = args['continue-on-test-failure'] === 'true';
   const autoDiscoverTests = args['auto-discover-tests'] === 'true';
+  let jobs = parsePositiveInt(args.jobs || '1', 1);
 
   let testListCmd = args['test-list'];
   let testRunTemplate = args['test-run'];
@@ -77,11 +119,26 @@ async function cmdMap(args) {
     );
   }
 
+  if (
+    jobs > 1 &&
+    !testRunTemplate.includes('{{WORKER}}') &&
+    !testRunTemplate.includes('{{COVERAGE_PATH}}') &&
+    !coveragePath.includes('{{WORKER}}')
+  ) {
+    console.warn(
+      'Requested parallel mapping but test run template does not isolate coverage output. Falling back to --jobs 1. Use {{WORKER}} or {{COVERAGE_PATH}} in --test-run (or {{WORKER}} in --coverage) to enable safe parallelism.',
+    );
+    jobs = 1;
+  }
+
   // Get tests (one per line)
   const testList = execSync(testListCmd, { encoding: 'utf8' })
     .split('\n')
     .map((s) => s.trim())
     .filter(Boolean);
+  console.log(
+    `Mapping ${testList.length} test(s) with ${jobs} worker(s).`,
+  );
 
   const failedTests = [];
   let mappedCount = 0;
@@ -93,25 +150,50 @@ async function cmdMap(args) {
   fs.writeSync(outFd, '{"tests":[\n');
 
   try {
-    for (const testId of testList) {
-      const cmd = testRunTemplate.replaceAll('{{TEST}}', testId);
-      console.log(`\n=== Running test: ${testId} ===\n${cmd}\n`);
-      try {
-        execSync(cmd, { stdio: 'inherit' });
-      } catch (err) {
-        if (!continueOnTestFailure) throw err;
-        failedTests.push(testId);
-        console.warn(`Skipping failed test in map generation: ${testId}`);
-        continue;
-      }
+    let nextIndex = 0;
+    const runWorker = async (workerId) => {
+      while (true) {
+        const idx = nextIndex++;
+        if (idx >= testList.length) return;
 
-      const fileToLines = parseCoverage(format, coveragePath);
-      const entry = buildUniversalTestEntry(testId, fileToLines);
-      if (wroteAnyEntry) fs.writeSync(outFd, ',\n');
-      fs.writeSync(outFd, JSON.stringify(entry));
-      wroteAnyEntry = true;
-      mappedCount += 1;
+        const testId = testList[idx];
+        const workerCoveragePath =
+          jobs === 1 ? coveragePath : getCoveragePathForWorker(coveragePath, workerId);
+        const cmd = expandTemplate(testRunTemplate, {
+          TEST: testId,
+          WORKER: workerId,
+          COVERAGE_PATH: workerCoveragePath,
+          COVERAGE_DIR: path.dirname(workerCoveragePath),
+        });
+
+        console.log(`\n=== Running test (worker ${workerId}): ${testId} ===\n${cmd}\n`);
+
+        try {
+          if (jobs === 1) execSync(cmd, { stdio: 'inherit' });
+          else await runShellCommand(cmd);
+        } catch (err) {
+          if (!continueOnTestFailure) throw err;
+          failedTests.push(testId);
+          console.warn(`Skipping failed test in map generation: ${testId}`);
+          continue;
+        }
+
+        const fileToLines = parseCoverage(format, workerCoveragePath);
+        const entry = buildUniversalTestEntry(testId, fileToLines);
+        if (wroteAnyEntry) fs.writeSync(outFd, ',\n');
+        fs.writeSync(outFd, JSON.stringify(entry));
+        wroteAnyEntry = true;
+        mappedCount += 1;
+      }
+    };
+
+    const workerCount = Math.min(jobs, Math.max(1, testList.length));
+    const workers = [];
+    for (let worker = 1; worker <= workerCount; worker += 1) {
+      workers.push(runWorker(worker));
     }
+    await Promise.all(workers);
+
     fs.writeSync(outFd, '\n]}\n');
     writeCompleted = true;
   } finally {
@@ -317,7 +399,7 @@ async function cmdSelect(args) {
     if (cmd === 'merge') return await cmdMerge(args);
     console.log('Usage:');
     console.log(
-      '  node src/index.js map --format c8|lcov|jacoco --coverage <path> --test-list <cmd> --test-run <cmdTemplate> [--auto-discover-tests true] [--continue-on-test-failure true] --out <json>',
+      '  node src/index.js map --format c8|lcov|jacoco --coverage <path> --test-list <cmd> --test-run <cmdTemplate> [--jobs <n>] [--auto-discover-tests true] [--continue-on-test-failure true] --out <json>',
     );
     console.log(
       '  node src/index.js discover [--out <json>]',

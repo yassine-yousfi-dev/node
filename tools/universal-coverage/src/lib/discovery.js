@@ -27,7 +27,7 @@ function detectNodeCoreRepo(cwd) {
     test_list_command:
       "find test/parallel test/sequential -type f \\( -name 'test-*.js' -o -name 'test-*.mjs' \\) | sed -E 's#^test/##; s#\\.(mjs|js)$##' | sort",
     test_run_command_template:
-      'rm -rf coverage/tmp coverage/coverage-final.json && mkdir -p coverage/tmp && NODE_V8_COVERAGE=coverage/tmp python3 tools/test.py --mode=release --type=coverage -j1 {{TEST}} && npx c8 report --reporter=json --report-dir=coverage --temp-directory=coverage/tmp',
+      'rm -rf "coverage/tmp-{{WORKER}}" "{{COVERAGE_PATH}}" && mkdir -p "coverage/tmp-{{WORKER}}" "$(dirname "{{COVERAGE_PATH}}")" && NODE_V8_COVERAGE="coverage/tmp-{{WORKER}}" python3 tools/test.py --mode=release --type=coverage -j1 {{TEST}} && npx c8 report --reporter=json --report-dir="$(dirname "{{COVERAGE_PATH}}")" --temp-directory="coverage/tmp-{{WORKER}}"',
   };
 }
 
@@ -60,7 +60,7 @@ function detectJest(cwd) {
     confidence: 0.9,
     test_list_command: 'npx jest --listTests',
     test_run_command_template:
-      'rm -rf coverage/tmp coverage/coverage-final.json && mkdir -p coverage/tmp && NODE_V8_COVERAGE=coverage/tmp npx jest --runInBand {{TEST}} && npx c8 report --reporter=json --report-dir=coverage --temp-directory=coverage/tmp',
+      'rm -rf "coverage/tmp-{{WORKER}}" "{{COVERAGE_PATH}}" && mkdir -p "coverage/tmp-{{WORKER}}" "$(dirname "{{COVERAGE_PATH}}")" && NODE_V8_COVERAGE="coverage/tmp-{{WORKER}}" npx jest --runInBand {{TEST}} && npx c8 report --reporter=json --report-dir="$(dirname "{{COVERAGE_PATH}}")" --temp-directory="coverage/tmp-{{WORKER}}"',
   };
 }
 
