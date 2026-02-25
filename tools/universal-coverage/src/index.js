@@ -11,7 +11,7 @@ const {
   forEachUniversalMapTest,
 } = require('./lib/io');
 const { prDiffToChangedRanges } = require('./lib/diff');
-const { discoverTestSetup } = require('./lib/discovery');
+const { discoverTestSetup, discoverAllTestSetups } = require('./lib/discovery');
 
 function parseArgs(argv) {
   const args = {};
@@ -96,12 +96,17 @@ async function cmdMap(args) {
   let testRunTemplate = args['test-run'];
 
   if ((!testListCmd || !testRunTemplate) && autoDiscoverTests) {
-    const detected = discoverTestSetup();
+    const detected = discoverTestSetup({ probe: true });
     testListCmd = testListCmd || detected.test_list_command;
     testRunTemplate = testRunTemplate || detected.test_run_command_template;
     console.log(
-      `Auto-discovered test setup: ${detected.adapter} (${detected.source}, confidence=${detected.confidence})`,
+      `Auto-discovered test setup: ${detected.adapter} (${detected.source}, confidence=${detected.confidence}, score=${detected.score ?? detected.confidence})`,
     );
+    if (detected.probe && Array.isArray(detected.probe.missing_commands) && detected.probe.missing_commands.length > 0) {
+      console.warn(
+        `Missing required commands for selected adapter: ${detected.probe.missing_commands.join(', ')}`,
+      );
+    }
     if (Array.isArray(detected.warnings)) {
       for (const w of detected.warnings) console.warn(w);
     }
@@ -213,14 +218,27 @@ async function cmdMap(args) {
 
 function cmdDiscover(args) {
   const outPath = args.out;
-  const detected = discoverTestSetup();
+  const candidates = discoverAllTestSetups({ probe: true });
+  const detected = candidates[0];
   const payload = {
     adapter: detected.adapter,
     source: detected.source,
     confidence: detected.confidence,
+    score: detected.score ?? detected.confidence,
     test_list_command: detected.test_list_command,
     test_run_command_template: detected.test_run_command_template,
+    probe: detected.probe || null,
     warnings: detected.warnings || [],
+    candidates: candidates.map((candidate) => ({
+      adapter: candidate.adapter,
+      source: candidate.source,
+      confidence: candidate.confidence,
+      score: candidate.score ?? candidate.confidence,
+      test_list_command: candidate.test_list_command,
+      test_run_command_template: candidate.test_run_command_template,
+      probe: candidate.probe || null,
+      warnings: candidate.warnings || [],
+    })),
   };
 
   if (outPath) {
