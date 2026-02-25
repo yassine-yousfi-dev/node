@@ -105,7 +105,6 @@ jobs:
             const mapPath = "maps/universal_coverage_map.json";
             if (!fs.existsSync(mapPath)) {
               core.warning("No universal map artifact found from main. Recommend running full test suite.");
-              core.setOutput("selected_tests", "");
               core.setOutput("selected_count", "0");
               return;
             }
@@ -116,27 +115,26 @@ jobs:
             const selected = fs.readFileSync("selected_tests.txt", "utf8").trim();
             if (!selected) {
               core.warning("No impacted tests found (or missing mapping). Recommend safe fallback (full or smoke suite).");
-              core.setOutput("selected_tests", "");
               core.setOutput("selected_count", "0");
             } else {
-              core.notice(`Selected tests:\n${selected.split("\n").map(x => "- " + x).join("\n")}`);
-              core.setOutput("selected_tests", selected);
               core.setOutput("selected_count", String(selected.split("\n").filter(Boolean).length));
             }
 
       - name: Comment selected tests on PR
         uses: actions/github-script@v7
         env:
-          SELECTED_TESTS: ${{ steps.select_tests.outputs.selected_tests }}
           SELECTED_COUNT: ${{ steps.select_tests.outputs.selected_count }}
           MAP_RUN_ID: ${{ steps.find_map.outputs.run_id }}
         with:
           script: |
+            const fs = require("fs");
             const marker = "<!-- targeted-tests-comment -->";
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const issue_number = context.payload.pull_request.number;
-            const selected = (process.env.SELECTED_TESTS || "").trim();
+            const selected = fs.existsSync("selected_tests.txt")
+              ? fs.readFileSync("selected_tests.txt", "utf8").trim()
+              : "";
             const count = Number(process.env.SELECTED_COUNT || "0");
             const mapRunId = process.env.MAP_RUN_ID || "unknown";
 
@@ -146,8 +144,13 @@ jobs:
               body += "No impacted tests found (or map unavailable). Use fallback suite.\n";
             } else {
               const lines = selected.split("\n").filter(Boolean);
+              const maxCommentLines = 200;
+              const shown = lines.slice(0, maxCommentLines);
               body += `Selected ${count} test(s):\n`;
-              body += lines.map((t) => `- \`${t}\``).join("\n");
+              body += shown.map((t) => `- \`${t}\``).join("\n");
+              if (lines.length > shown.length) {
+                body += `\n- ... and ${lines.length - shown.length} more (see workflow artifact \`selected_tests\`)`;
+              }
               body += "\n";
             }
 
