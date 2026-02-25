@@ -41,6 +41,7 @@ on:
     - cron: '0 2 * * *' # nightly 02:00 UTC
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -144,12 +145,187 @@ jobs:
           path: ${{ env.CCACHE_DIR }}
           key: ${{ steps.ccache_restore.outputs.cache-primary-key }}
 
+      - name: Find previous universal map artifact on main
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        id: find_prev_map
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const currentRunId = Number(process.env.GITHUB_RUN_ID || "0");
+
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              owner,
+              repo,
+              workflow_id: "map-builder.yaml",
+              branch: "main",
+              status: "completed",
+              per_page: 100
+            });
+
+            const previousRun = runs.find((r) =>
+              r.conclusion === "success" && Number(r.id) !== currentRunId
+            );
+
+            if (!previousRun) {
+              core.notice("No previous successful map-builder run found; using full rebuild.");
+              core.setOutput("has_prev_map", "false");
+              return;
+            }
+
+            const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+              owner,
+              repo,
+              run_id: previousRun.id,
+              per_page: 100
+            });
+
+            const mapArtifact = artifacts.find((a) => a.name === "universal-map" && !a.expired);
+            if (!mapArtifact) {
+              core.notice(`Run ${previousRun.id} has no non-expired universal-map artifact; using full rebuild.`);
+              core.setOutput("has_prev_map", "false");
+              return;
+            }
+
+            core.notice(`Using previous universal map from run ${previousRun.id}.`);
+            core.setOutput("has_prev_map", "true");
+            core.setOutput("run_id", String(previousRun.id));
+
+      - name: Download previous universal map artifact
+        if: ${{ steps.find_prev_map.outputs.has_prev_map == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: universal-map
+          path: prev_map
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.find_prev_map.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare incremental inputs
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.find_prev_map.outputs.has_prev_map == 'true' }}
+        id: incremental_inputs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const before = context.payload.before || "";
+            const after = context.sha;
+
+            const emptyBefore = /^0+$/.test(before);
+            if (!before || emptyBefore) {
+              core.notice("No usable 'before' SHA in push payload; using full rebuild.");
+              core.setOutput("incremental_ready", "false");
+              return;
+            }
+
+            const comparison = await github.rest.repos.compareCommitsWithBasehead({
+              owner,
+              repo,
+              basehead: `${before}...${after}`
+            });
+
+            const files = comparison.data.files || [];
+            if (files.length === 0) {
+              core.notice("No changed files in compare payload; reusing previous map.");
+            }
+
+            const prDiff = files.map((f) => ({
+              filename: f.filename,
+              status: f.status,
+              patch: f.patch || null
+            }));
+            fs.writeFileSync("compare_pr_files.json", JSON.stringify(prDiff, null, 2));
+
+            const testFilePattern = /^test\/.+\.(?:js|mjs|cjs|ts|tsx|jsx|py|go|rs)$/;
+            const directChanged = [];
+            const removedTests = [];
+            for (const f of files) {
+              if (!testFilePattern.test(f.filename)) continue;
+              if (f.status === "removed") removedTests.push(f.filename);
+              else directChanged.push(f.filename);
+            }
+
+            fs.writeFileSync(
+              "direct_changed_tests.txt",
+              directChanged.length ? `${directChanged.join("\n")}\n` : "",
+              "utf8",
+            );
+            fs.writeFileSync(
+              "removed_tests.txt",
+              removedTests.length ? `${removedTests.join("\n")}\n` : "",
+              "utf8",
+            );
+
+            core.setOutput("incremental_ready", "true");
+            core.setOutput("changed_file_count", String(files.length));
+            core.setOutput("direct_changed_count", String(directChanged.length));
+            core.setOutput("removed_test_count", String(removedTests.length));
+            core.notice(
+              `Incremental inputs prepared: ${files.length} changed file(s), ${directChanged.length} directly changed test file(s), ${removedTests.length} removed test file(s).`,
+            );
+
       - name: Generate universal map (per-test coverage)
+        env:
+          HAS_PREV_MAP: ${{ steps.find_prev_map.outputs.has_prev_map || 'false' }}
+          INCREMENTAL_READY: ${{ steps.incremental_inputs.outputs.incremental_ready || 'false' }}
         run: |
+          set -euo pipefail
+          mkdir -p maps
+
+          PREV_MAP_PATH="prev_map/universal_coverage_map.json"
+          USE_INCREMENTAL="false"
+          if [ "${HAS_PREV_MAP:-false}" = "true" ] && [ "${INCREMENTAL_READY:-false}" = "true" ] && [ -f "$PREV_MAP_PATH" ]; then
+            USE_INCREMENTAL="true"
+          fi
+
+          if [ "$USE_INCREMENTAL" = "true" ]; then
+            echo "Running incremental map update."
+
+            node tools/universal-coverage/src/index.js select \
+              --map "$PREV_MAP_PATH" \
+              --pr "compare_pr_files.json" \
+              --out "impacted_from_map.txt"
+
+            cat impacted_from_map.txt direct_changed_tests.txt 2>/dev/null \
+              | sed '/^[[:space:]]*$/d' \
+              | sort -u > tests_to_refresh.txt || true
+
+            REFRESH_COUNT="$(wc -l < tests_to_refresh.txt | tr -d ' ')"
+            REMOVED_COUNT="$(wc -l < removed_tests.txt | tr -d ' ' || echo 0)"
+            echo "Tests to refresh: $REFRESH_COUNT"
+            echo "Tests to remove: $REMOVED_COUNT"
+
+            if [ "$REFRESH_COUNT" -eq 0 ]; then
+              echo "No tests to refresh. Reusing baseline map with removals applied."
+              printf '{"tests":[]}\n' > maps/universal_coverage_delta.json
+            else
+              node tools/universal-coverage/src/index.js map \
+                --format "$COVERAGE_FORMAT" \
+                --coverage "$COVERAGE_PATH" \
+                --test-list "cat tests_to_refresh.txt" \
+                --test-run "$TEST_RUN_TEMPLATE" \
+                --auto-discover-tests "true" \
+                --continue-on-test-failure "true" \
+                --out "maps/universal_coverage_delta.json"
+            fi
+
+            MERGE_ARGS=(--base "$PREV_MAP_PATH" --delta "maps/universal_coverage_delta.json" --out "maps/universal_coverage_map.json")
+            if [ -s removed_tests.txt ]; then
+              MERGE_ARGS+=(--remove "removed_tests.txt")
+            fi
+            node tools/universal-coverage/src/index.js merge "${MERGE_ARGS[@]}"
+            exit 0
+          fi
+
+          echo "Running full map rebuild."
           EFFECTIVE_TEST_LIST_COMMAND="$TEST_LIST_COMMAND"
           if [ -n "$TEST_FILTER" ] && [ -n "$EFFECTIVE_TEST_LIST_COMMAND" ]; then
             EFFECTIVE_TEST_LIST_COMMAND="$EFFECTIVE_TEST_LIST_COMMAND | grep -E '$TEST_FILTER'"
           fi
+
           if [ -n "$MAX_TESTS" ] && [ -n "$EFFECTIVE_TEST_LIST_COMMAND" ]; then
             EFFECTIVE_TEST_LIST_COMMAND="$EFFECTIVE_TEST_LIST_COMMAND | head -n $MAX_TESTS"
           fi

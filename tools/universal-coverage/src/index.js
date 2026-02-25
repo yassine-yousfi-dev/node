@@ -148,6 +148,71 @@ function cmdDiscover(args) {
   console.log(JSON.stringify(payload, null, 2));
 }
 
+async function cmdMerge(args) {
+  const basePath = args.base;
+  const deltaPath = args.delta;
+  const outPath = args.out;
+  const removePath = args.remove;
+
+  if (!basePath || !deltaPath || !outPath) {
+    throw new Error('merge requires --base --delta --out [--remove <ids.txt>]');
+  }
+
+  const removeIds = new Set();
+  if (removePath && fs.existsSync(removePath)) {
+    const raw = fs.readFileSync(removePath, 'utf8');
+    for (const id of raw.split('\n').map((s) => s.trim()).filter(Boolean)) {
+      removeIds.add(id);
+    }
+  }
+
+  const deltaIds = new Set();
+  await forEachUniversalMapTest(deltaPath, (t) => {
+    if (t && t.id) deltaIds.add(t.id);
+  });
+
+  ensureDir(outPath);
+  const outFd = fs.openSync(outPath, 'w');
+  let wroteAnyEntry = false;
+  let keptFromBase = 0;
+  let removedFromBase = 0;
+  let addedFromDelta = 0;
+
+  const writeEntry = (entry) => {
+    if (wroteAnyEntry) fs.writeSync(outFd, ',\n');
+    fs.writeSync(outFd, JSON.stringify(entry));
+    wroteAnyEntry = true;
+  };
+
+  fs.writeSync(outFd, '{"tests":[\n');
+  try {
+    await forEachUniversalMapTest(basePath, (t) => {
+      if (!t || !t.id) return;
+      if (removeIds.has(t.id) || deltaIds.has(t.id)) {
+        removedFromBase += 1;
+        return;
+      }
+      keptFromBase += 1;
+      writeEntry(t);
+    });
+
+    await forEachUniversalMapTest(deltaPath, (t) => {
+      if (!t || !t.id) return;
+      if (removeIds.has(t.id)) return;
+      addedFromDelta += 1;
+      writeEntry(t);
+    });
+
+    fs.writeSync(outFd, '\n]}\n');
+  } finally {
+    fs.closeSync(outFd);
+  }
+
+  console.log(
+    `Merged map written: ${outPath} (kept ${keptFromBase}, replaced/removed ${removedFromBase}, added ${addedFromDelta})`,
+  );
+}
+
 function intersectsChangedRanges(fileEntry, changedRanges) {
   // changedRanges: Map<path, Array<[start,end]>>
   const ranges = getChangedRangesForPath(changedRanges, fileEntry.path);
@@ -249,6 +314,7 @@ async function cmdSelect(args) {
     if (cmd === 'map') return await cmdMap(args);
     if (cmd === 'discover') return cmdDiscover(args);
     if (cmd === 'select') return await cmdSelect(args);
+    if (cmd === 'merge') return await cmdMerge(args);
     console.log('Usage:');
     console.log(
       '  node src/index.js map --format c8|lcov|jacoco --coverage <path> --test-list <cmd> --test-run <cmdTemplate> [--auto-discover-tests true] [--continue-on-test-failure true] --out <json>',
@@ -258,6 +324,9 @@ async function cmdSelect(args) {
     );
     console.log(
       '  node src/index.js select --map <json> --pr <pr_files.json> --out <selected_tests.txt>',
+    );
+    console.log(
+      '  node src/index.js merge --base <base_map.json> --delta <delta_map.json> --out <merged_map.json> [--remove <ids.txt>]',
     );
     process.exit(1);
   } catch (e) {
